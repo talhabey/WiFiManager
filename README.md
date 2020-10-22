@@ -1,3 +1,5 @@
+### This is a fork of the original project. This one acts as an API instead of showing web pages.
+
 ## Current development going on here :arrow_right: [Development Branch](https://github.com/tzapu/WiFiManager/tree/development)
 
 # WiFiManager

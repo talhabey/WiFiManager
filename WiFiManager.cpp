@@ -145,7 +145,6 @@ void WiFiManager::setupConfigPortal() {
   /* Setup web pages: root, wifi config pages, SO captive portal detectors and not found. */
   server->on(String(F("/")).c_str(), std::bind(&WiFiManager::handleRoot, this));
   server->on(String(F("/wifi")).c_str(), std::bind(&WiFiManager::handleWifi, this, true));
-  server->on(String(F("/0wifi")).c_str(), std::bind(&WiFiManager::handleWifi, this, false));
   server->on(String(F("/wifisave")).c_str(), std::bind(&WiFiManager::handleWifiSave, this));
   server->on(String(F("/i")).c_str(), std::bind(&WiFiManager::handleInfo, this));
   server->on(String(F("/r")).c_str(), std::bind(&WiFiManager::handleReset, this));
@@ -449,41 +448,20 @@ void WiFiManager::handleRoot() {
   if (captivePortal()) { // If caprive portal redirect instead of displaying the page.
     return;
   }
-
-  String page = FPSTR(HTTP_HEADER);
-  page.replace("{v}", "Options");
-  page += FPSTR(HTTP_SCRIPT);
-  page += FPSTR(HTTP_STYLE);
-  page += _customHeadElement;
-  page += FPSTR(HTTP_HEADER_END);
-  page += String(F("<h1>"));
-  page += _apName;
-  page += String(F("</h1>"));
-  page += String(F("<h3>WiFiManager</h3>"));
-  page += FPSTR(HTTP_PORTAL_OPTIONS);
-  page += FPSTR(HTTP_END);
-
-  server->sendHeader("Content-Length", String(page.length()));
-  server->send(200, "text/html", page);
+  handleWifi(true);
 
 }
 
 /** Wifi config page handler */
 void WiFiManager::handleWifi(boolean scan) {
 
-  String page = FPSTR(HTTP_HEADER);
-  page.replace("{v}", "Config ESP");
-  page += FPSTR(HTTP_SCRIPT);
-  page += FPSTR(HTTP_STYLE);
-  page += _customHeadElement;
-  page += FPSTR(HTTP_HEADER_END);
-
-  if (scan) {
+  String jsonResult = "[";
+   if (scan) {
     int n = WiFi.scanNetworks();
     DEBUG_WM(F("Scan done"));
     if (n == 0) {
       DEBUG_WM(F("No networks found"));
-      page += F("No networks found. Refresh to scan again.");
+      
     } else {
 
       //sort networks
@@ -522,7 +500,6 @@ void WiFiManager::handleWifi(boolean scan) {
           }
         }
       }
-
       //display networks in page
       for (int i = 0; i < n; i++) {
         if (indices[i] == -1) continue; // skip dups
@@ -531,94 +508,28 @@ void WiFiManager::handleWifi(boolean scan) {
         int quality = getRSSIasQuality(WiFi.RSSI(indices[i]));
 
         if (_minimumQuality == -1 || _minimumQuality < quality) {
-          String item = FPSTR(HTTP_ITEM);
+          String item = FPSTR(JSON_WIFI_ITEM);
           String rssiQ;
           rssiQ += quality;
           item.replace("{v}", WiFi.SSID(indices[i]));
           item.replace("{r}", rssiQ);
-          if (WiFi.encryptionType(indices[i]) != ENC_TYPE_NONE) {
-            item.replace("{i}", "l");
-          } else {
-            item.replace("{i}", "");
-          }
-          //DEBUG_WM(item);
-          page += item;
+          item.replace("{i}", WiFi.encryptionType(indices[i]) != ENC_TYPE_NONE ? "1" : "0");
+          
+          jsonResult += item;
+          
           delay(0);
         } else {
           DEBUG_WM(F("Skipping due to quality"));
         }
-
       }
-      page += "<br/>";
+      if( n > 0 )
+       jsonResult.remove(jsonResult.length() - 1);
     }
   }
 
-  page += FPSTR(HTTP_FORM_START);
-  char parLength[5];
-  // add the extra parameters to the form
-  for (int i = 0; i < _paramsCount; i++) {
-    if (_params[i] == NULL) {
-      break;
-    }
-
-    String pitem = FPSTR(HTTP_FORM_PARAM);
-    if (_params[i]->getID() != NULL) {
-      pitem.replace("{i}", _params[i]->getID());
-      pitem.replace("{n}", _params[i]->getID());
-      pitem.replace("{p}", _params[i]->getPlaceholder());
-      snprintf(parLength, 5, "%d", _params[i]->getValueLength());
-      pitem.replace("{l}", parLength);
-      pitem.replace("{v}", _params[i]->getValue());
-      pitem.replace("{c}", _params[i]->getCustomHTML());
-    } else {
-      pitem = _params[i]->getCustomHTML();
-    }
-
-    page += pitem;
-  }
-  if (_params[0] != NULL) {
-    page += "<br/>";
-  }
-
-  if (_sta_static_ip) {
-
-    String item = FPSTR(HTTP_FORM_PARAM);
-    item.replace("{i}", "ip");
-    item.replace("{n}", "ip");
-    item.replace("{p}", "Static IP");
-    item.replace("{l}", "15");
-    item.replace("{v}", _sta_static_ip.toString());
-
-    page += item;
-
-    item = FPSTR(HTTP_FORM_PARAM);
-    item.replace("{i}", "gw");
-    item.replace("{n}", "gw");
-    item.replace("{p}", "Static Gateway");
-    item.replace("{l}", "15");
-    item.replace("{v}", _sta_static_gw.toString());
-
-    page += item;
-
-    item = FPSTR(HTTP_FORM_PARAM);
-    item.replace("{i}", "sn");
-    item.replace("{n}", "sn");
-    item.replace("{p}", "Subnet");
-    item.replace("{l}", "15");
-    item.replace("{v}", _sta_static_sn.toString());
-
-    page += item;
-
-    page += "<br/>";
-  }
-
-  page += FPSTR(HTTP_FORM_END);
-  page += FPSTR(HTTP_SCAN_LINK);
-
-  page += FPSTR(HTTP_END);
-
-  server->sendHeader("Content-Length", String(page.length()));
-  server->send(200, "text/html", page);
+  jsonResult += "]";
+  server->sendHeader("Content-Length", String(jsonResult.length()));
+  server->send(200, "application/json", jsonResult);
 
 
   DEBUG_WM(F("Sent config page"));
@@ -626,6 +537,7 @@ void WiFiManager::handleWifi(boolean scan) {
 
 /** Handle the WLAN save form and redirect to WLAN config page again */
 void WiFiManager::handleWifiSave() {
+  if (server->method() == HTTP_POST) {
   DEBUG_WM(F("WiFi save"));
 
   //SAVE/connect here
@@ -666,60 +578,43 @@ void WiFiManager::handleWifiSave() {
     optionalIPFromString(&_sta_static_sn, sn.c_str());
   }
 
-  String page = FPSTR(HTTP_HEADER);
-  page.replace("{v}", "Credentials Saved");
-  page += FPSTR(HTTP_SCRIPT);
-  page += FPSTR(HTTP_STYLE);
-  page += _customHeadElement;
-  page += FPSTR(HTTP_HEADER_END);
-  page += FPSTR(HTTP_SAVED);
-  page += FPSTR(HTTP_END);
-
-  server->sendHeader("Content-Length", String(page.length()));
-  server->send(200, "text/html", page);
+  server->send(200);
 
   DEBUG_WM(F("Sent wifi save page"));
 
   connect = true; //signal ready to connect/reset
+  }
 }
 
 /** Handle the info page */
 void WiFiManager::handleInfo() {
   DEBUG_WM(F("Info"));
 
-  String page = FPSTR(HTTP_HEADER);
-  page.replace("{v}", "Info");
-  page += FPSTR(HTTP_SCRIPT);
-  page += FPSTR(HTTP_STYLE);
-  page += _customHeadElement;
-  page += FPSTR(HTTP_HEADER_END);
-  page += F("<dl>");
-  page += F("<dt>Chip ID</dt><dd>");
-  page += ESP.getChipId();
-  page += F("</dd>");
-  page += F("<dt>Flash Chip ID</dt><dd>");
-  page += ESP.getFlashChipId();
-  page += F("</dd>");
-  page += F("<dt>IDE Flash Size</dt><dd>");
-  page += ESP.getFlashChipSize();
-  page += F(" bytes</dd>");
-  page += F("<dt>Real Flash Size</dt><dd>");
-  page += ESP.getFlashChipRealSize();
-  page += F(" bytes</dd>");
-  page += F("<dt>Soft AP IP</dt><dd>");
-  page += WiFi.softAPIP().toString();
-  page += F("</dd>");
-  page += F("<dt>Soft AP MAC</dt><dd>");
-  page += WiFi.softAPmacAddress();
-  page += F("</dd>");
-  page += F("<dt>Station MAC</dt><dd>");
-  page += WiFi.macAddress();
-  page += F("</dd>");
-  page += F("</dl>");
-  page += FPSTR(HTTP_END);
+  String jsonResult = "{";
+  jsonResult += F("\"chipId\" : ");
+  jsonResult += ESP.getChipId();
+  jsonResult += ",";
+  
+  jsonResult += F("\"flashChipId\" : ");
+  jsonResult +=  ESP.getFlashChipId();
+  jsonResult += ",";
+  
+  jsonResult += F("\"flashBytes\" : ");
+  jsonResult +=  ESP.getFlashChipSize();
+  jsonResult += ",";
+  
+  jsonResult += F("\"flashRealBytes\" : ");
+  jsonResult +=  ESP.getFlashChipRealSize();
+  jsonResult += ",";
+    
+  jsonResult += F("\"staMac\" : ");
+  jsonResult +="\"" ;
+  jsonResult +=  WiFi.macAddress();
+  jsonResult +="\"" ;
 
-  server->sendHeader("Content-Length", String(page.length()));
-  server->send(200, "text/html", page);
+  jsonResult += "}";
+  server->sendHeader("Content-Length", String(jsonResult.length()));
+  server->send(200, "application/json", jsonResult);
 
   DEBUG_WM(F("Sent info page"));
 }
@@ -728,17 +623,7 @@ void WiFiManager::handleInfo() {
 void WiFiManager::handleReset() {
   DEBUG_WM(F("Reset"));
 
-  String page = FPSTR(HTTP_HEADER);
-  page.replace("{v}", "Info");
-  page += FPSTR(HTTP_SCRIPT);
-  page += FPSTR(HTTP_STYLE);
-  page += _customHeadElement;
-  page += FPSTR(HTTP_HEADER_END);
-  page += F("Module will reset in a few seconds.");
-  page += FPSTR(HTTP_END);
-
-  server->sendHeader("Content-Length", String(page.length()));
-  server->send(200, "text/html", page);
+  server->send(200);
 
   DEBUG_WM(F("Sent reset page"));
   delay(5000);
